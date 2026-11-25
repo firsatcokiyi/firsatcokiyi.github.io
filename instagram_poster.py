@@ -4,6 +4,17 @@ import time
 import requests
 
 API = "https://graph.instagram.com/v21.0"
+last_error = None  # son başarısız yayının nedeni (e-posta raporunda gösterilir)
+
+
+def _err(prefix, text):
+    global last_error
+    try:
+        e = __import__("json").loads(text)["error"]
+        last_error = f"{prefix}: {e.get('error_user_msg') or e.get('message')} (kod {e.get('code')}/{e.get('error_subcode', '-')})"
+    except Exception:
+        last_error = f"{prefix}: {text[:200]}"
+    print(f"  {last_error}")
 
 
 def check_token(user_id, token):
@@ -31,7 +42,7 @@ def publish(image_url, caption, user_id, token, story=False):
         data["caption"] = caption
     c = requests.post(f"{API}/{user_id}/media", data=data, timeout=60)
     if c.status_code != 200:
-        print(f"  Container hatası: {c.text[:300]}")
+        _err("Container hatası", c.text)
         return None
     cid = c.json()["id"]
 
@@ -43,14 +54,14 @@ def publish(image_url, caption, user_id, token, story=False):
         if status == "FINISHED":
             break
         if status == "ERROR":
-            print(f"  Instagram görseli işleyemedi: {s}")
+            _err("Instagram görseli işleyemedi", str(s))
             return None
         time.sleep(3)
 
     p = requests.post(f"{API}/{user_id}/media_publish",
                       data={"creation_id": cid, "access_token": token}, timeout=60)
     if p.status_code != 200:
-        print(f"  Yayınlama hatası: {p.text[:300]}")
+        _err("Yayınlama hatası", p.text)
         return None
     return p.json().get("id")
 

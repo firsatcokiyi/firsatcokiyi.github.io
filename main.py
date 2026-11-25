@@ -21,6 +21,7 @@ import requests
 from dotenv import load_dotenv
 
 from amazon_fetcher import scan, select
+import instagram_poster
 from instagram_poster import check_token, permalink, publish, quota_left
 from notify import notify
 from categories import categorize
@@ -97,7 +98,7 @@ def plan_count(now, posted_today, requested):
     return max(0, min(MAX_PER_RUN, -(-remaining // runs_left)))
 
 
-def report(done, failed, posted, stories, posted_today):
+def report(done, failed, posted, stories, posted_today, story_errors):
     """E-posta bildirimine gidecek Markdown özet."""
     lines = [f"**{datetime.now(TR):%H:%M}** — {len(done)} post, {stories} story yayınlandı "
              f"(bugün toplam {posted_today}/{DAILY_MAX})", ""]
@@ -109,7 +110,10 @@ def report(done, failed, posted, stories, posted_today):
                      f"{it['title'][:80]}  \n  {ig} · [Amazon]({it['url']}){story}")
     if failed:
         lines += ["", f"⚠️ {len(failed)} ürün yayınlanamadı (ayrıntı Actions günlüğünde):"]
-        lines += [f"- {it['title'][:80]}" for it in failed]
+        lines += [f"- {it['title'][:80]}" + (f"  \n  `{it['error']}`" if it.get("error") else "")
+                  for it in failed]
+    if story_errors:
+        lines += ["", f"⚠️ {len(story_errors)} story yayınlanamadı:"] + [f"- `{e}`" for e in story_errors]
     if os.getenv("GITHUB_RUN_ID"):
         lines += ["", f"[Çalıştırma günlüğü]({os.getenv('GITHUB_SERVER_URL')}/"
                       f"{os.getenv('GITHUB_REPOSITORY')}/actions/runs/{os.getenv('GITHUB_RUN_ID')})"]
@@ -206,7 +210,7 @@ def main():
         return f"https://raw.githubusercontent.com/{slug}/{sha}/{path.relative_to(HERE).as_posix()}"
 
     ok = stories = 0
-    done, failed = [], []
+    done, failed, story_errors = [], [], []
     try:
         for n, it in enumerate(picks, 1):
             print(f"\n[{n}/{len(picks)}] {it['title'][:70]}")
@@ -223,8 +227,10 @@ def main():
                 media_id = publish(url, caption(it), INSTAGRAM_USER_ID, INSTAGRAM_TOKEN)
             except requests.RequestException as e:
                 print(f"  Ağ hatası: {e}")
+                instagram_poster.last_error = f"Ağ hatası: {e}"
                 media_id = None
             if not media_id:
+                it["error"] = instagram_poster.last_error
                 failed.append(it)
                 continue
             ok += 1
@@ -249,6 +255,7 @@ def main():
                                    INSTAGRAM_TOKEN, story=True)
             except requests.RequestException as e:
                 print(f"  Story ağ hatası: {e}")
+                instagram_poster.last_error = f"Ağ hatası: {e}"
                 story_id = None
             if story_id:
                 stories += 1
@@ -256,6 +263,8 @@ def main():
                 POSTED_PATH.write_text(json.dumps(posted, ensure_ascii=False, indent=1) + "\n",
                                        encoding="utf-8")
                 print(f"  ✅ Story yayınlandı [{it['cat']}]")
+            else:
+                story_errors.append(f"{it['title'][:40]}: {instagram_poster.last_error}")
 
             if n < len(picks):
                 time.sleep(DELAY_BETWEEN_POSTS)
@@ -265,7 +274,7 @@ def main():
             build_site(posted, slug)
             git_commit_push([POSTED_PATH, SITE_DIR],
                             f"Paylaşılanlar güncellendi: {today} {now:%H:%M} (+{ok})")
-        notify(slug, today, report(done, failed, posted, stories, posted_today))
+        notify(slug, today, report(done, failed, posted, stories, posted_today, story_errors))
 
     print(f"\n=== Tamamlandı: {ok}/{len(picks)} post, {stories} story yayınlandı ===")
     if ok == 0:
