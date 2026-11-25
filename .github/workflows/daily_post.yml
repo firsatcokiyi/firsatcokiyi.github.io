@@ -1,7 +1,7 @@
 name: Günlük Instagram Post
 
 # Türkiye saatiyle 08:00-23:00 arasında saatte bir paylaşım yapar. main.py günün kalan
-# paylaşımlarını (günde en fazla 50) kalan saatlere böler. GitHub'ın kendi zamanlayıcısı
+# paylaşımlarını (günde en fazla 24 post, her birine story) kalan saatlere böler. GitHub'ın kendi zamanlayıcısı
 # bu repoda güvenilmez olduğu için her çalıştırma sonunda next_run.py bir sonraki saate
 # kadar bekleyip workflow'u yeniden tetikler (zincir). Aşağıdaki schedule sadece zincir
 # koparsa yeniden başlatmak için yedek. Her çalıştırmanın özeti günlük bir issue'ya

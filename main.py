@@ -1,6 +1,6 @@
 """Amazon.com.tr'deki 365/90 günün en düşük fiyatlı ürünlerini Instagram'a paylaşır.
 GitHub Actions gün içinde (TR 08-23) saatte bir çalıştırır; her çalıştırma günün
-kalanını kalan saatlere bölerek günde en fazla DAILY_MAX post atar. Daha önce
+kalanını kalan saatlere bölerek günde en fazla DAILY_MAX post ve her birine story atar. Daha önce
 paylaşılan ürünler posted.json'da tutulur ve bir daha seçilmez. Her çalıştırmanın
 özeti GitHub issue yorumu olarak (e-posta bildirimiyle) gönderilir.
 
@@ -35,8 +35,9 @@ INSTAGRAM_TOKEN = os.getenv("INSTAGRAM_TOKEN")
 POSTED_PATH = HERE / "posted.json"
 POSTS_DIR = HERE / "posts"
 SITE_DIR = HERE / "docs"
-STATE_PATH = HERE / "state.json"  # ör. story'lerin API kotasından düşüp düşmediği
-DAILY_MAX = 50  # günlük üst sınır (Instagram API kotası da 24 saatte 50)
+# Instagram API kotası 24 saatte 50 yayın ve story'ler de bu kotadan düşüyor.
+# Her post + story 2 hak kullandığı için günde 24 post + 24 story (48 hak, 2 pay).
+DAILY_MAX = 24
 MAX_PER_RUN = 10
 WINDOW = (8, 23)  # TR saatiyle paylaşım penceresi [8:00, 23:00)
 DELAY_BETWEEN_POSTS = 20  # saniye
@@ -152,7 +153,7 @@ def main():
         left = quota_left(INSTAGRAM_USER_ID, INSTAGRAM_TOKEN)
         if left is not None:
             print(f"Instagram 24 saatlik yayın kotasında kalan: {left}")
-            count = max(0, min(count, left))
+            count = max(0, min(count, left // 2))
             if count == 0:
                 print("API kotası dolu; bu çalıştırma atlanıyor.")
                 return
@@ -206,13 +207,12 @@ def main():
 
     ok = stories = 0
     done, failed = [], []
-    state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
     try:
         for n, it in enumerate(picks, 1):
             print(f"\n[{n}/{len(picks)}] {it['title'][:70]}")
             left = quota_left(INSTAGRAM_USER_ID, INSTAGRAM_TOKEN)
-            if left is not None and left <= 0:
-                print("  Instagram 24 saatlik yayın kotası doldu; kalan ürünler sonraki çalıştırmaya.")
+            if left is not None and left < 2:  # post + story için iki hak gerekir
+                print(f"  Instagram 24 saatlik yayın kotası dolu ({left} hak); kalanlar sonraki çalıştırmaya.")
                 break
             url = raw(it["path"])
             if not wait_until_public(url):
@@ -242,34 +242,20 @@ def main():
             POSTED_PATH.write_text(json.dumps(posted, ensure_ascii=False, indent=1) + "\n",
                                    encoding="utf-8")
 
-            # Story — başarısız olsa da feed postu sayılır. Story'lerin API kotasından yiyip
-            # yemediği ilk story'de ölçülüp state.json'a yazılır; yiyorsa story sadece günün
-            # kalan postlarına yetecek kota fazlası varsa atılır (öncelik postlarda).
-            uses = state.get("stories_use_quota")
-            before = quota_left(INSTAGRAM_USER_ID, INSTAGRAM_TOKEN) if uses is not False else None
-            if uses and before is not None and before <= DAILY_MAX - posted_today:
-                print(f"  Story atlandı (kotada {before} hak kaldı, postlara ayrıldı)")
+            # Story — her postun story'si de atılır (kotadaki yeri post öncesi ayrıldı).
+            # Story başarısız olsa da feed postu sayılır.
+            try:
+                story_id = publish(raw(it["story_path"]), "", INSTAGRAM_USER_ID,
+                                   INSTAGRAM_TOKEN, story=True)
+            except requests.RequestException as e:
+                print(f"  Story ağ hatası: {e}")
                 story_id = None
-            else:
-                try:
-                    story_id = publish(raw(it["story_path"]), "", INSTAGRAM_USER_ID,
-                                       INSTAGRAM_TOKEN, story=True)
-                except requests.RequestException as e:
-                    print(f"  Story ağ hatası: {e}")
-                    story_id = None
             if story_id:
                 stories += 1
                 posted[it["asin"]]["story_id"] = story_id
                 POSTED_PATH.write_text(json.dumps(posted, ensure_ascii=False, indent=1) + "\n",
                                        encoding="utf-8")
                 print(f"  ✅ Story yayınlandı [{it['cat']}]")
-                if uses is None and before is not None:
-                    after = quota_left(INSTAGRAM_USER_ID, INSTAGRAM_TOKEN)
-                    if after is not None:
-                        state["stories_use_quota"] = after < before
-                        STATE_PATH.write_text(json.dumps(state, indent=1) + "\n", encoding="utf-8")
-                        print(f"  Story API kotasından {'düşüyor' if after < before else 'düşmüyor'}"
-                              f" ({before} → {after})")
 
             if n < len(picks):
                 time.sleep(DELAY_BETWEEN_POSTS)
@@ -277,7 +263,7 @@ def main():
         # Ne olursa olsun paylaşılanları kaydet; sonraki çalıştırma bunları tekrar seçmesin
         if ok:
             build_site(posted, slug)
-            git_commit_push([POSTED_PATH, SITE_DIR] + ([STATE_PATH] if STATE_PATH.exists() else []),
+            git_commit_push([POSTED_PATH, SITE_DIR],
                             f"Paylaşılanlar güncellendi: {today} {now:%H:%M} (+{ok})")
         notify(slug, today, report(done, failed, posted, stories, posted_today))
 
